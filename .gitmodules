@@ -1,0 +1,3 @@
+[submodule "testdata/reuse-example"]
+	path = testdata/reuse-example
+	url = https://github.com/fsfe/reuse-example.git

@@ -1,0 +1,12 @@
+version = 1
+
+[[annotations]]
+path = "src/**"
+SPDX-FileCopyrightText = "2024 TOML Org"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = "assets/**"
+precedence = "override"
+SPDX-FileCopyrightText = "2024 Asset Author"
+SPDX-License-Identifier = "CC0-1.0"
