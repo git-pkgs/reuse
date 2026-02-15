@@ -28,11 +28,12 @@ func globToRegexp(pattern string) *regexp.Regexp {
 		switch {
 		case ch == '\\' && i+1 < len(pattern):
 			next := pattern[i+1]
-			if next == '*' {
+			switch next {
+			case '*':
 				b.WriteString(regexp.QuoteMeta("*"))
-			} else if next == '\\' {
+			case '\\':
 				b.WriteString(regexp.QuoteMeta("\\"))
-			} else {
+			default:
 				b.WriteString(regexp.QuoteMeta(string(next)))
 			}
 			i += 2
