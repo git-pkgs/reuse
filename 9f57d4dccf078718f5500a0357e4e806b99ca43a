@@ -1,0 +1,27 @@
+extract/extract.go
+  030108281eafe025 6,146-147,152,176-177,182-183,186-187
+go.mod
+  030108281eafe025 3
+.github/workflows/ci.yml
+  030108281eafe025 16,46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.15",
+  "base_commit_sha": "9f57d4dccf078718f5500a0357e4e806b99ca43a",
+  "prompts": {
+    "030108281eafe025": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "837d6afb-040e-4f1e-85a2-f794ae2b5d50",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Andrew Nesbitt <andrewnez@gmail.com>",
+      "messages": [],
+      "total_additions": 16,
+      "total_deletions": 15,
+      "accepted_lines": 14,
+      "overriden_lines": 0
+    }
+  }
+}
