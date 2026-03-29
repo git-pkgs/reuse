@@ -3,6 +3,7 @@ package extract
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -142,13 +143,13 @@ func FilterIgnoreBlocks(text string) string {
 		b.WriteString(text[:startIdx])
 
 		rest := text[startIdx+len(startMarker):]
-		endIdx := strings.Index(rest, endMarker)
-		if endIdx == -1 {
+		_, after, found := strings.Cut(rest, endMarker)
+		if !found {
 			// Unclosed block: discard the rest.
 			break
 		}
 
-		text = rest[endIdx+len(endMarker):]
+		text = after
 	}
 
 	return b.String()
@@ -172,18 +173,18 @@ func ExtractFromFile(path string) (core.ReuseInfo, error) {
 	return info, nil
 }
 
+const binaryCheckLimit = 8192
+
 // isBinary returns true if data looks like a binary file. It checks for null
 // bytes and invalid UTF-8 in the first 8KB.
 func isBinary(data []byte) bool {
 	check := data
-	if len(check) > 8192 {
-		check = check[:8192]
+	if len(check) > binaryCheckLimit {
+		check = check[:binaryCheckLimit]
 	}
 
-	for _, b := range check {
-		if b == 0 {
-			return true
-		}
+	if slices.Contains(check, 0) {
+		return true
 	}
 
 	return !utf8.Valid(check)
