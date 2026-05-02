@@ -177,38 +177,37 @@ func parseDep5Fields(paragraph string) map[string]string {
 
 // dep5Match checks if a path matches a dep5 glob pattern.
 // dep5 uses fnmatch-style patterns where * matches everything including /.
-func dep5Match(pattern, path string) bool {
-	// dep5 uses fnmatch with FNM_PATHNAME not set, so * matches /.
-	return dep5MatchRecursive(pattern, path)
-}
-
-func dep5MatchRecursive(pattern, name string) bool {
-	for len(pattern) > 0 {
-		switch pattern[0] {
-		case '*':
-			pattern = pattern[1:]
-			// Try matching the rest from every position.
-			for i := 0; i <= len(name); i++ {
-				if dep5MatchRecursive(pattern, name[i:]) {
-					return true
-				}
+func dep5Match(pattern, name string) bool {
+	// Iterative match with single-level backtrack to the most recent *.
+	// This runs in O(len(pattern) * len(name)) instead of exponential
+	// time on patterns with many wildcards.
+	px, nx := 0, 0
+	starPx, starNx := -1, 0
+	for nx < len(name) {
+		if px < len(pattern) {
+			switch c := pattern[px]; {
+			case c == '*':
+				starPx = px
+				starNx = nx
+				px++
+				continue
+			case c == '?' || c == name[nx]:
+				px++
+				nx++
+				continue
 			}
-			return false
-		case '?':
-			if len(name) == 0 {
-				return false
-			}
-			pattern = pattern[1:]
-			name = name[1:]
-		default:
-			if len(name) == 0 || pattern[0] != name[0] {
-				return false
-			}
-			pattern = pattern[1:]
-			name = name[1:]
 		}
+		if starPx < 0 {
+			return false
+		}
+		starNx++
+		px = starPx + 1
+		nx = starNx
 	}
-	return len(name) == 0
+	for px < len(pattern) && pattern[px] == '*' {
+		px++
+	}
+	return px == len(pattern)
 }
 
 // splitDep5Copyright splits a multi-line copyright field into individual notices.
