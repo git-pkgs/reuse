@@ -3,7 +3,9 @@ package dep5
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/git-pkgs/reuse/internal/core"
 )
@@ -282,6 +284,60 @@ License: MIT
 	}
 	if _, ok := d.ReuseInfoOf("src/ab.go"); ok {
 		t.Error("expected no match for src/ab.go")
+	}
+}
+
+func TestDep5Match(t *testing.T) {
+	tests := []struct {
+		pattern string
+		name    string
+		want    bool
+	}{
+		{"*", "anything", true},
+		{"*", "", true},
+		{"*.go", "main.go", true},
+		{"*.go", "sub/dir/main.go", true},
+		{"*.go", "main.c", false},
+		{"a*b*c", "aXbYc", true},
+		{"a*b*c", "abc", true},
+		{"a*b*c", "aXbY", false},
+		{"src/?.go", "src/a.go", true},
+		{"src/?.go", "src/ab.go", false},
+		{"", "", true},
+		{"", "x", false},
+		{"abc", "abc", true},
+		{"abc", "abd", false},
+		{"a**b", "axxb", true},
+		{"**", "a/b/c", true},
+		{"docs/*", "docs/a/b/c.md", true},
+	}
+	for _, tt := range tests {
+		got := dep5Match(tt.pattern, tt.name)
+		if got != tt.want {
+			t.Errorf("dep5Match(%q, %q) = %v, want %v", tt.pattern, tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestDep5MatchPathological(t *testing.T) {
+	// A pattern with many wildcards against a string that almost matches
+	// then fails at the end. The previous recursive implementation took
+	// exponential time on inputs like this; the iterative version is linear.
+	pattern := strings.Repeat("*a", 30) + "*b"
+	name := strings.Repeat("a", 100) + "c"
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- dep5Match(pattern, name)
+	}()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected no match")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("dep5Match took >1s on pathological input")
 	}
 }
 
