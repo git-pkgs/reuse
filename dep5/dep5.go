@@ -185,13 +185,13 @@ func dep5Match(pattern, name string) bool {
 	starPx, starNx := -1, 0
 	for nx < len(name) {
 		if px < len(pattern) {
-			switch c := pattern[px]; {
-			case c == '*':
+			switch c := pattern[px]; c {
+			case '*':
 				starPx = px
 				starNx = nx
 				px++
 				continue
-			case c == '?' || c == name[nx]:
+			case '?', name[nx]:
 				px++
 				nx++
 				continue
