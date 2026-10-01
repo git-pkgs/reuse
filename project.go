@@ -1,11 +1,13 @@
 package reuse
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/git-pkgs/reuse/dep5"
 	"github.com/git-pkgs/reuse/extract"
@@ -183,7 +185,7 @@ func (p *Project) fileInfo(path string) (ReuseInfo, error) {
 	if info, err := os.Stat(filepath.Join(p.Root, path+".license")); err == nil && info.Mode().IsRegular() {
 		source += ".license"
 		sourceType = DotLicense
-	} else if err != nil && !os.IsNotExist(err) {
+	} else if err != nil && !os.IsNotExist(err) && !errors.Is(err, syscall.ENAMETOOLONG) {
 		return ReuseInfo{}, err
 	}
 	info, err := extract.ExtractFromFile(filepath.Join(p.Root, source))

@@ -5,8 +5,31 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
+
+func TestProjectAllReuseInfoLongFilename(t *testing.T) {
+	root := t.TempDir()
+	const filenameLength = 250
+	const extension = ".go"
+	name := strings.Repeat("a", filenameLength-len(extension)) + extension
+	mkfile(t, root, name, "// SPDX-License-Identifier: MIT\npackage main\n")
+	mkfile(t, root, "main.go", "// SPDX-License-Identifier: Apache-2.0\npackage main\n")
+	project, err := OpenProject(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := project.AllReuseInfo()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("covered files = %d, want 2", len(all))
+	}
+	assertSlice(t, all[name].LicenseExpressions, []string{"MIT"})
+	assertSlice(t, all["main.go"].LicenseExpressions, []string{"Apache-2.0"})
+}
 
 func TestProjectSidecarPrecedence(t *testing.T) {
 	for _, tc := range []struct {
