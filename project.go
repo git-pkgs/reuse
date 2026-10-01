@@ -1,8 +1,10 @@
 package reuse
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/git-pkgs/reuse/dep5"
@@ -13,28 +15,38 @@ import (
 // Project represents a REUSE-compliant project directory.
 type Project struct {
 	Root         string
-	ReuseTOML    *rtoml.ReuseTOML
+	ReuseTOMLs   map[string]*rtoml.ReuseTOML // keyed by relative directory; "." is the root
 	Dep5         *dep5.Dep5
 	LicenseFiles []string // relative paths in LICENSES/
 }
 
 // OpenProject discovers and parses REUSE metadata in the given project root.
-// It looks for REUSE.toml, .reuse/dep5, and LICENSES/ directory.
+// It loads REUSE.toml files throughout the covered directories, or .reuse/dep5
+// when no TOML files are present, and lists LICENSES/.
 func OpenProject(root string) (*Project, error) {
-	p := &Project{Root: root}
-
-	// Try REUSE.toml.
-	tomlPath := filepath.Join(root, "REUSE.toml")
-	if _, err := os.Stat(tomlPath); err == nil {
-		rt, err := rtoml.ParseReuseTOMLFile(tomlPath)
-		if err != nil {
-			return nil, err
-		}
-		p.ReuseTOML = rt
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("project root is not a directory: %s", root)
+	}
+	tomls, err := readReuseTOMLs(root)
+	if err != nil {
+		return nil, err
+	}
+	p := &Project{Root: root, ReuseTOMLs: tomls}
 
 	// Try .reuse/dep5 (only if no REUSE.toml, they are mutually exclusive).
-	if p.ReuseTOML == nil {
+	if len(p.ReuseTOMLs) == 0 {
 		dep5Path := filepath.Join(root, ".reuse", "dep5")
 		if _, err := os.Stat(dep5Path); err == nil {
 			d, err := dep5.ParseDep5File(dep5Path)
@@ -64,65 +76,61 @@ func OpenProject(root string) (*Project, error) {
 	return p, nil
 }
 
-// ReuseInfoOf resolves all REUSE information sources for the given path
-// (relative to project root) and returns the combined result. The precedence
-// order follows the spec:
-//
-//  1. .license sidecar file (if present, used exclusively)
-//  2. REUSE.toml override annotations
-//  3. File header extraction
-//  4. REUSE.toml closest/aggregate annotations
-//  5. dep5
-func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
-	// 1. Check for .license sidecar.
-	sidecarPath := filepath.Join(p.Root, path+".license")
-	if fi, err := os.Stat(sidecarPath); err == nil && fi.Mode().IsRegular() {
-		info, err := extract.ExtractFromFile(sidecarPath)
+func readReuseTOMLs(root string) (map[string]*rtoml.ReuseTOML, error) {
+	files := make(map[string]*rtoml.ReuseTOML)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			return ReuseInfo{}, err
+			return err
 		}
-		info.SourceType = DotLicense
-		info.SourcePath = path + ".license"
-		return info, nil
-	}
-
-	// 2. Check REUSE.toml for override.
-	if p.ReuseTOML != nil {
-		tomlInfo, prec, ok := p.ReuseTOML.ReuseInfoOf(path)
-		if ok && prec == Override {
-			return tomlInfo, nil
-		}
-	}
-
-	// 3. Extract from file header.
-	filePath := filepath.Join(p.Root, path)
-	fileInfo, err := extract.ExtractFromFile(filePath)
-	if err != nil {
-		// If the file can't be read, still try other sources.
-		if !os.IsNotExist(err) {
-			return ReuseInfo{}, err
-		}
-		fileInfo = ReuseInfo{}
-	}
-	fileInfo.SourcePath = path
-	fileInfo.SourceType = FileHeader
-
-	// 4. Apply REUSE.toml closest/aggregate annotations.
-	if p.ReuseTOML != nil {
-		tomlInfo, prec, ok := p.ReuseTOML.ReuseInfoOf(path)
-		if ok {
-			switch prec {
-			case Aggregate:
-				fileInfo = mergeReuseInfo(fileInfo, tomlInfo)
-			case Closest:
-				fileInfo = applyClosest(fileInfo, tomlInfo)
+		if entry.IsDir() {
+			if path != root && IsIgnoredDir(entry.Name()) {
+				return filepath.SkipDir
 			}
+			return nil
 		}
-	}
+		if entry.Name() != "REUSE.toml" || !entry.Type().IsRegular() {
+			return nil
+		}
+		parsed, err := rtoml.ParseReuseTOMLFile(path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		parsed.Source = filepath.ToSlash(relative)
+		files[filepath.ToSlash(filepath.Dir(relative))] = parsed
+		return nil
+	})
+	return files, err
+}
 
-	// 5. Check dep5 (aggregate precedence).
+// ReuseInfoOf resolves all REUSE information sources for the given path
+// (relative to project root) and returns the combined result. A sidecar replaces
+// the file header. The outermost TOML override suppresses closer sources;
+// otherwise closest annotations fill missing fields and aggregate adds values.
+func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
+	if !filepath.IsLocal(path) {
+		return ReuseInfo{}, fmt.Errorf("path must be relative to the project: %s", path)
+	}
+	path = filepath.Clean(path)
+	closest, aggregate, override := p.annotationsFor(path)
+	if override != nil {
+		return mergeReuseInfo(*override, aggregate), nil
+	}
+	fileInfo, err := p.fileInfo(path)
+	if err != nil {
+		return ReuseInfo{}, err
+	}
+	if !closest.IsEmpty() {
+		fileInfo = applyClosest(fileInfo, closest)
+	}
+	fileInfo = mergeReuseInfo(fileInfo, aggregate)
+
+	// DEP5 uses aggregate precedence.
 	if p.Dep5 != nil {
-		dep5Info, ok := p.Dep5.ReuseInfoOf(path)
+		dep5Info, ok := p.Dep5.ReuseInfoOf(filepath.ToSlash(path))
 		if ok {
 			dep5Info.SourcePath = filepath.Join(".reuse", "dep5")
 			if fileInfo.IsEmpty() {
@@ -133,6 +141,58 @@ func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
 	}
 
 	return fileInfo, nil
+}
+
+func (p *Project) annotationsFor(path string) (closest, aggregate ReuseInfo, override *ReuseInfo) {
+	var directories []string
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		directories = append(directories, dir)
+		if dir == "." {
+			break
+		}
+	}
+	slices.Reverse(directories)
+	for _, dir := range directories {
+		config := p.ReuseTOMLs[filepath.ToSlash(dir)]
+		if config == nil {
+			continue
+		}
+		relative := filepath.ToSlash(path)
+		if dir != "." {
+			relative = strings.TrimPrefix(relative, filepath.ToSlash(dir)+"/")
+		}
+		info, precedence, ok := config.ReuseInfoOf(relative)
+		if !ok {
+			continue
+		}
+		switch precedence {
+		case Closest:
+			closest = applyClosest(info, closest)
+		case Aggregate:
+			aggregate = mergeReuseInfo(aggregate, info)
+		case Override:
+			return ReuseInfo{}, aggregate, &info
+		}
+	}
+	return closest, aggregate, nil
+}
+
+func (p *Project) fileInfo(path string) (ReuseInfo, error) {
+	source := path
+	sourceType := FileHeader
+	if info, err := os.Stat(filepath.Join(p.Root, path+".license")); err == nil && info.Mode().IsRegular() {
+		source += ".license"
+		sourceType = DotLicense
+	} else if err != nil && !os.IsNotExist(err) {
+		return ReuseInfo{}, err
+	}
+	info, err := extract.ExtractFromFile(filepath.Join(p.Root, source))
+	if err != nil && (sourceType == DotLicense || !os.IsNotExist(err)) {
+		return ReuseInfo{}, err
+	}
+	info.SourcePath = filepath.ToSlash(source)
+	info.SourceType = sourceType
+	return info, nil
 }
 
 // AllReuseInfo walks all covered files in the project and returns licensing
@@ -158,6 +218,9 @@ func (p *Project) AllReuseInfo() (map[string]ReuseInfo, error) {
 // mergeReuseInfo combines two ReuseInfo values, appending licenses, copyrights,
 // and contributors from other into base.
 func mergeReuseInfo(base, other ReuseInfo) ReuseInfo {
+	if base.IsEmpty() && len(base.Contributors) == 0 && !other.IsEmpty() {
+		base.SourcePath, base.SourceType = other.SourcePath, other.SourceType
+	}
 	base.LicenseExpressions = appendUnique(base.LicenseExpressions, other.LicenseExpressions...)
 	base.CopyrightNotices = appendUnique(base.CopyrightNotices, other.CopyrightNotices...)
 	base.Contributors = appendUnique(base.Contributors, other.Contributors...)
@@ -168,7 +231,7 @@ func mergeReuseInfo(base, other ReuseInfo) ReuseInfo {
 // annotation, but only if the file is missing that particular piece.
 func applyClosest(fileInfo, tomlInfo ReuseInfo) ReuseInfo {
 	if !fileInfo.HasLicense() && !fileInfo.HasCopyright() {
-		// File has no REUSE info at all; use the toml info entirely.
+		tomlInfo.Contributors = appendUnique(fileInfo.Contributors, tomlInfo.Contributors...)
 		return tomlInfo
 	}
 	if !fileInfo.HasLicense() {
@@ -181,6 +244,9 @@ func applyClosest(fileInfo, tomlInfo ReuseInfo) ReuseInfo {
 }
 
 func appendUnique(base []string, items ...string) []string {
+	if len(items) == 0 {
+		return base
+	}
 	seen := make(map[string]bool, len(base))
 	for _, s := range base {
 		seen[s] = true

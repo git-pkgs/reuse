@@ -3,6 +3,7 @@ package toml
 import (
 	"fmt"
 	"os"
+	"slices"
 
 	btoml "github.com/BurntSushi/toml"
 	"github.com/git-pkgs/reuse/internal/core"
@@ -125,8 +126,8 @@ func (t *ReuseTOML) ReuseInfoOf(path string) (core.ReuseInfo, core.PrecedenceTyp
 		ann := &t.Annotations[i]
 		if ann.Matches(path) {
 			info := core.ReuseInfo{
-				LicenseExpressions: ann.Licenses,
-				CopyrightNotices:   ann.Copyrights,
+				LicenseExpressions: slices.Clone(ann.Licenses),
+				CopyrightNotices:   slices.Clone(ann.Copyrights),
 				SourcePath:         t.Source,
 				SourceType:         core.ReuseToml,
 			}
