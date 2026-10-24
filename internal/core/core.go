@@ -56,8 +56,8 @@ func (p PrecedenceType) String() string {
 	}
 }
 
-// ReuseInfo holds the licensing and copyright information extracted from a
-// single source (file header, sidecar, REUSE.toml annotation, or dep5 paragraph).
+// ReuseInfo holds raw licensing metadata. For combined results, SourcePath and
+// SourceType identify the primary source rather than every contributing source.
 type ReuseInfo struct {
 	LicenseExpressions []string
 	CopyrightNotices   []string

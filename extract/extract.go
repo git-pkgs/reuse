@@ -12,18 +12,18 @@ import (
 
 var (
 	// Trailing comment-end markers stripped from matched values.
-	endPattern = `[\s]*(?:\*/|-->|"|'>|\]\s*::|"\))?[\s]*$`
+	endPattern = `[ \t\f]*(?:\*/|-->|"|'>|\][ \t\f]*::|"\))?[ \t\f]*$`
 
 	licensePattern = regexp.MustCompile(
-		`(?m)^.*?SPDX-License-Identifier:\s*(?P<value>.*?)` + endPattern,
+		`(?m)SPDX-License-Identifier:[ \t\f]*(?P<value>.*?)` + endPattern,
 	)
 
 	copyrightPattern = regexp.MustCompile(
-		`(?m)^.*?SPDX-(?:File|Snippet)CopyrightText:\s*(?P<value>.*?)` + endPattern,
+		`(?m)SPDX-(?:File|Snippet)CopyrightText:[ \t\f]*(?P<value>.*?)` + endPattern,
 	)
 
 	contributorPattern = regexp.MustCompile(
-		`(?m)^.*?SPDX-FileContributor:\s*(?P<value>.*?)` + endPattern,
+		`(?m)SPDX-FileContributor:[ \t\f]*(?P<value>.*?)` + endPattern,
 	)
 
 	snippetBeginPattern = regexp.MustCompile(`(?m)^.*?SPDX-SnippetBegin`)
@@ -32,7 +32,8 @@ var (
 
 // ExtractReuseInfo extracts SPDX license, copyright, and contributor
 // information from the given text. It handles REUSE-IgnoreStart/End blocks
-// and SPDX-SnippetBegin/End regions.
+// and SPDX-SnippetBegin/End regions. The text must be complete; the final line
+// is treated as terminated. Returned values do not retain the input string.
 func ExtractReuseInfo(text string) core.ReuseInfo {
 	// Normalize line endings.
 	text = strings.ReplaceAll(text, "\r\n", "\n")
@@ -40,6 +41,9 @@ func ExtractReuseInfo(text string) core.ReuseInfo {
 
 	// Strip ignore blocks.
 	text = FilterIgnoreBlocks(text)
+	if !strings.Contains(text, "SPDX-") {
+		return core.ReuseInfo{}
+	}
 
 	// Strip snippet regions but keep the snippet tags themselves for extraction.
 	// The spec says snippet info applies only to the snippet, but for file-level
@@ -59,19 +63,19 @@ func extractFromText(text string, info *core.ReuseInfo) {
 	for _, m := range licensePattern.FindAllStringSubmatch(text, -1) {
 		val := strings.TrimSpace(m[1])
 		if val != "" {
-			info.LicenseExpressions = append(info.LicenseExpressions, val)
+			info.LicenseExpressions = append(info.LicenseExpressions, strings.Clone(val))
 		}
 	}
 	for _, m := range copyrightPattern.FindAllStringSubmatch(text, -1) {
 		val := strings.TrimSpace(m[1])
 		if val != "" {
-			info.CopyrightNotices = append(info.CopyrightNotices, val)
+			info.CopyrightNotices = append(info.CopyrightNotices, strings.Clone(val))
 		}
 	}
 	for _, m := range contributorPattern.FindAllStringSubmatch(text, -1) {
 		val := strings.TrimSpace(m[1])
 		if val != "" {
-			info.Contributors = append(info.Contributors, val)
+			info.Contributors = append(info.Contributors, strings.Clone(val))
 		}
 	}
 }
@@ -80,6 +84,9 @@ func extractFromText(text string, info *core.ReuseInfo) {
 // regions and the snippet regions themselves. If no snippets are found, the
 // entire text is returned as the file portion.
 func splitSnippets(text string) (string, []string) {
+	if !strings.Contains(text, "SPDX-SnippetBegin") {
+		return text, nil
+	}
 	beginLocs := snippetBeginPattern.FindAllStringIndex(text, -1)
 	if len(beginLocs) == 0 {
 		return text, nil
@@ -180,7 +187,13 @@ const binaryCheckLimit = 8192
 func isBinary(data []byte) bool {
 	check := data
 	if len(check) > binaryCheckLimit {
-		check = check[:binaryCheckLimit]
+		// Include a code point that straddles the probe boundary.
+		start := binaryCheckLimit - 1
+		for start > binaryCheckLimit-utf8.UTFMax && !utf8.RuneStart(data[start]) {
+			start--
+		}
+		_, size := utf8.DecodeRune(data[start:])
+		check = check[:max(binaryCheckLimit, start+size)]
 	}
 
 	if slices.Contains(check, 0) {

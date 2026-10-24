@@ -14,7 +14,7 @@ func TestOpenProject_WithReuseTOML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.ReuseTOML == nil {
+	if p.ReuseTOMLs["."] == nil {
 		t.Fatal("expected ReuseTOML to be set")
 	}
 	if p.Dep5 != nil {
@@ -33,7 +33,7 @@ func TestOpenProject_WithDep5(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.ReuseTOML != nil {
+	if len(p.ReuseTOMLs) != 0 {
 		t.Error("expected ReuseTOML to be nil")
 	}
 	if p.Dep5 == nil {
@@ -49,7 +49,7 @@ func TestOpenProject_HeaderOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.ReuseTOML != nil {
+	if len(p.ReuseTOMLs) != 0 {
 		t.Error("expected ReuseTOML to be nil")
 	}
 	if p.Dep5 != nil {
@@ -250,7 +250,7 @@ func Bare() {}`)
 	assertSlice(t, info.CopyrightNotices, []string{"2024 Dep5 Author"})
 }
 
-func TestProject_ReuseInfoOf_SidecarOverridesAll(t *testing.T) {
+func TestProject_ReuseInfoOf_TOMLOverridesSidecar(t *testing.T) {
 	root := setupFakeProject(t, "toml")
 
 	mkfile(t, root, "src/special.go", `// SPDX-License-Identifier: MIT
@@ -278,9 +278,8 @@ SPDX-License-Identifier = "Apache-2.0"
 		t.Fatal(err)
 	}
 
-	// Sidecar takes absolute precedence over everything.
-	assertSlice(t, info.LicenseExpressions, []string{"GPL-3.0-only"})
-	assertSlice(t, info.CopyrightNotices, []string{"2024 Sidecar Author"})
+	assertSlice(t, info.LicenseExpressions, []string{"Apache-2.0"})
+	assertSlice(t, info.CopyrightNotices, []string{"2024 TOML Author"})
 }
 
 func TestProject_AllReuseInfo(t *testing.T) {
@@ -350,7 +349,7 @@ func TestProject_FakeRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if p.ReuseTOML == nil {
+	if p.ReuseTOMLs["."] == nil {
 		t.Fatal("expected REUSE.toml")
 	}
 
@@ -387,14 +386,14 @@ func TestProject_FakeRepository(t *testing.T) {
 	assertSlice(t, info.LicenseExpressions, []string{"MIT"})
 	assertSlice(t, info.CopyrightNotices, []string{"2024 Visible"})
 
-	// assets/logo.png has a .license sidecar, which takes priority.
+	// The asset annotation overrides the .license sidecar.
 	info, err = p.ReuseInfoOf("assets/logo.png")
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertSlice(t, info.LicenseExpressions, []string{"CC0-1.0"})
-	if info.SourceType != DotLicense {
-		t.Errorf("assets/logo.png SourceType = %v, want DotLicense", info.SourceType)
+	if info.SourceType != ReuseToml {
+		t.Errorf("assets/logo.png SourceType = %v, want ReuseToml", info.SourceType)
 	}
 
 	// License files in LICENSES/ should be discovered.
