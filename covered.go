@@ -1,6 +1,7 @@
 package reuse
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -73,12 +74,22 @@ func IsCoveredFile(path string) bool {
 }
 
 // CoveredFiles walks a project directory and returns the relative paths of all
-// files that need licensing information. It skips ignored directories, symlinks,
-// zero-byte files, and files matching ignore patterns.
+// files that need licensing information. It skips ignored directories,
+// non-regular files, zero-byte files, and files matching ignore patterns.
 func CoveredFiles(root string) ([]string, error) {
+	files, err := CoveredFilesFS(os.DirFS(root))
+	for i := range files {
+		files[i] = filepath.FromSlash(files[i])
+	}
+	return files, err
+}
+
+// CoveredFilesFS returns slash-separated paths of covered files in fsys.
+// It skips ignored directories, non-regular files, empty files, and ignored names.
+func CoveredFilesFS(fsys fs.FS) ([]string, error) {
 	var files []string
 
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -86,23 +97,17 @@ func CoveredFiles(root string) ([]string, error) {
 		name := d.Name()
 
 		if d.IsDir() {
-			if path == root {
+			if path == "." {
 				return nil
 			}
 			if IsIgnoredDir(name) {
-				return filepath.SkipDir
+				return fs.SkipDir
 			}
 			return nil
 		}
 
-		// Skip symlinks.
-		if d.Type()&os.ModeSymlink != 0 {
+		if !d.Type().IsRegular() {
 			return nil
-		}
-
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
 		}
 
 		if IsIgnoredFile(name) {
@@ -114,16 +119,11 @@ func CoveredFiles(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if info.Size() == 0 {
+		if info.Size() == 0 || !info.Mode().IsRegular() {
 			return nil
 		}
 
-		// Skip symlinks detected via Lstat (WalkDir may resolve them).
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		files = append(files, rel)
+		files = append(files, path)
 		return nil
 	})
 

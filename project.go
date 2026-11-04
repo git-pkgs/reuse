@@ -3,7 +3,9 @@ package reuse
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,12 +16,14 @@ import (
 	rtoml "github.com/git-pkgs/reuse/toml"
 )
 
-// Project represents a REUSE-compliant project directory.
+// Project contains REUSE metadata and reads project files from a filesystem.
 type Project struct {
+	// Root is the absolute directory for OpenProject, or "." for OpenProjectFS.
 	Root         string
 	ReuseTOMLs   map[string]*rtoml.ReuseTOML // keyed by relative directory; "." is the root
 	Dep5         *dep5.Dep5
 	LicenseFiles []string // relative paths in LICENSES/
+	fsys         fs.FS
 }
 
 // OpenProject discovers and parses REUSE metadata in the given project root.
@@ -34,24 +38,42 @@ func OpenProject(root string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(root)
+	p, err := OpenProjectFS(os.DirFS(root))
+	if err != nil {
+		return nil, err
+	}
+	p.Root = root
+	p.fsys = nil
+	return p, nil
+}
+
+// OpenProjectFS discovers REUSE metadata in fsys, with "." as the project root.
+// File names and metadata paths use forward slashes. Use fs.Sub to analyze a
+// subdirectory. The filesystem must remain available for subsequent lookups.
+// Paths passed to ReuseInfoOf must satisfy fs.ValidPath.
+func OpenProjectFS(fsys fs.FS) (*Project, error) {
+	info, err := fs.Stat(fsys, ".")
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("project root is not a directory: %s", root)
+		return nil, fmt.Errorf("project root %q is not a directory", ".")
 	}
-	tomls, err := readReuseTOMLs(root)
+	tomls, err := readReuseTOMLs(fsys)
 	if err != nil {
 		return nil, err
 	}
-	p := &Project{Root: root, ReuseTOMLs: tomls}
+	p := &Project{Root: ".", ReuseTOMLs: tomls, fsys: fsys}
 
 	// Try .reuse/dep5 (only if no REUSE.toml, they are mutually exclusive).
 	if len(p.ReuseTOMLs) == 0 {
-		dep5Path := filepath.Join(root, ".reuse", "dep5")
-		if _, err := os.Stat(dep5Path); err == nil {
-			d, err := dep5.ParseDep5File(dep5Path)
+		dep5Path := ".reuse/dep5"
+		if _, err := fs.Stat(fsys, dep5Path); err == nil {
+			data, err := fs.ReadFile(fsys, dep5Path)
+			if err != nil {
+				return nil, err
+			}
+			d, err := dep5.ParseDep5(string(data))
 			if err != nil {
 				return nil, err
 			}
@@ -60,8 +82,7 @@ func OpenProject(root string) (*Project, error) {
 	}
 
 	// Scan LICENSES/ directory.
-	licensesDir := filepath.Join(root, "LICENSES")
-	entries, err := os.ReadDir(licensesDir)
+	entries, err := fs.ReadDir(fsys, "LICENSES")
 	if err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
@@ -71,38 +92,38 @@ func OpenProject(root string) (*Project, error) {
 			if strings.HasSuffix(name, ".license") {
 				continue
 			}
-			p.LicenseFiles = append(p.LicenseFiles, filepath.Join("LICENSES", name))
+			p.LicenseFiles = append(p.LicenseFiles, path.Join("LICENSES", name))
 		}
 	}
 
 	return p, nil
 }
 
-func readReuseTOMLs(root string) (map[string]*rtoml.ReuseTOML, error) {
+func readReuseTOMLs(fsys fs.FS) (map[string]*rtoml.ReuseTOML, error) {
 	files := make(map[string]*rtoml.ReuseTOML)
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if path != root && IsIgnoredDir(entry.Name()) {
-				return filepath.SkipDir
+			if name != "." && IsIgnoredDir(entry.Name()) {
+				return fs.SkipDir
 			}
 			return nil
 		}
 		if entry.Name() != "REUSE.toml" || !entry.Type().IsRegular() {
 			return nil
 		}
-		parsed, err := rtoml.ParseReuseTOMLFile(path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		relative, err := filepath.Rel(root, path)
+		data, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return err
 		}
-		parsed.Source = filepath.ToSlash(relative)
-		files[filepath.ToSlash(filepath.Dir(relative))] = parsed
+		parsed, err := rtoml.ParseReuseTOML(string(data))
+		if err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+		parsed.Source = name
+		files[path.Dir(name)] = parsed
 		return nil
 	})
 	return files, err
@@ -113,10 +134,16 @@ func readReuseTOMLs(root string) (map[string]*rtoml.ReuseTOML, error) {
 // the file header. The outermost TOML override suppresses closer sources;
 // otherwise closest annotations fill missing fields and aggregate adds values.
 func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
-	if !filepath.IsLocal(path) {
+	valid := fs.ValidPath(path)
+	if p.fsys == nil {
+		valid = filepath.IsLocal(path)
+	}
+	if !valid {
 		return ReuseInfo{}, fmt.Errorf("path must be relative to the project: %s", path)
 	}
-	path = filepath.Clean(path)
+	if p.fsys == nil {
+		path = filepath.ToSlash(filepath.Clean(path))
+	}
 	closest, aggregate, override := p.annotationsFor(path)
 	if override != nil {
 		return mergeReuseInfo(*override, aggregate), nil
@@ -132,9 +159,9 @@ func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
 
 	// DEP5 uses aggregate precedence.
 	if p.Dep5 != nil {
-		dep5Info, ok := p.Dep5.ReuseInfoOf(filepath.ToSlash(path))
+		dep5Info, ok := p.Dep5.ReuseInfoOf(path)
 		if ok {
-			dep5Info.SourcePath = filepath.Join(".reuse", "dep5")
+			dep5Info.SourcePath = ".reuse/dep5"
 			if fileInfo.IsEmpty() {
 				return dep5Info, nil
 			}
@@ -145,9 +172,9 @@ func (p *Project) ReuseInfoOf(path string) (ReuseInfo, error) {
 	return fileInfo, nil
 }
 
-func (p *Project) annotationsFor(path string) (closest, aggregate ReuseInfo, override *ReuseInfo) {
+func (p *Project) annotationsFor(name string) (closest, aggregate ReuseInfo, override *ReuseInfo) {
 	var directories []string
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+	for dir := path.Dir(name); ; dir = path.Dir(dir) {
 		directories = append(directories, dir)
 		if dir == "." {
 			break
@@ -155,13 +182,13 @@ func (p *Project) annotationsFor(path string) (closest, aggregate ReuseInfo, ove
 	}
 	slices.Reverse(directories)
 	for _, dir := range directories {
-		config := p.ReuseTOMLs[filepath.ToSlash(dir)]
+		config := p.ReuseTOMLs[dir]
 		if config == nil {
 			continue
 		}
-		relative := filepath.ToSlash(path)
+		relative := name
 		if dir != "." {
-			relative = strings.TrimPrefix(relative, filepath.ToSlash(dir)+"/")
+			relative = strings.TrimPrefix(relative, dir+"/")
 		}
 		info, precedence, ok := config.ReuseInfoOf(relative)
 		if !ok {
@@ -180,27 +207,35 @@ func (p *Project) annotationsFor(path string) (closest, aggregate ReuseInfo, ove
 }
 
 func (p *Project) fileInfo(path string) (ReuseInfo, error) {
+	fsys := p.filesystem()
 	source := path
 	sourceType := FileHeader
-	if info, err := os.Stat(filepath.Join(p.Root, path+".license")); err == nil && info.Mode().IsRegular() {
+	if info, err := fs.Stat(fsys, path+".license"); err == nil && info.Mode().IsRegular() {
 		source += ".license"
 		sourceType = DotLicense
-	} else if err != nil && !os.IsNotExist(err) && !errors.Is(err, syscall.ENAMETOOLONG) {
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENAMETOOLONG) {
 		return ReuseInfo{}, err
 	}
-	info, err := extract.ExtractFromFile(filepath.Join(p.Root, source))
-	if err != nil && (sourceType == DotLicense || !os.IsNotExist(err)) {
+	info, err := extract.ExtractFromFS(fsys, source)
+	if err != nil && (sourceType == DotLicense || !errors.Is(err, fs.ErrNotExist)) {
 		return ReuseInfo{}, err
 	}
-	info.SourcePath = filepath.ToSlash(source)
+	info.SourcePath = source
 	info.SourceType = sourceType
 	return info, nil
+}
+
+func (p *Project) filesystem() fs.FS {
+	if p.fsys != nil {
+		return p.fsys
+	}
+	return os.DirFS(p.Root)
 }
 
 // AllReuseInfo walks all covered files in the project and returns licensing
 // information for each one, keyed by relative path.
 func (p *Project) AllReuseInfo() (map[string]ReuseInfo, error) {
-	files, err := CoveredFiles(p.Root)
+	files, err := CoveredFilesFS(p.filesystem())
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +245,9 @@ func (p *Project) AllReuseInfo() (map[string]ReuseInfo, error) {
 		info, err := p.ReuseInfoOf(f)
 		if err != nil {
 			return nil, err
+		}
+		if p.fsys == nil {
+			f = filepath.FromSlash(f)
 		}
 		result[f] = info
 	}

@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"io/fs"
 	"os"
 	"regexp"
 	"slices"
@@ -169,15 +170,28 @@ func ExtractFromFile(path string) (core.ReuseInfo, error) {
 	if err != nil {
 		return core.ReuseInfo{}, err
 	}
+	return extractFromData(data, path), nil
+}
 
+// ExtractFromFS reads a file from fsys and extracts REUSE information.
+// Binary files (detected by invalid UTF-8 or null bytes) return an empty ReuseInfo.
+func ExtractFromFS(fsys fs.FS, path string) (core.ReuseInfo, error) {
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return core.ReuseInfo{}, err
+	}
+	return extractFromData(data, path), nil
+}
+
+func extractFromData(data []byte, path string) core.ReuseInfo {
 	if isBinary(data) {
-		return core.ReuseInfo{}, nil
+		return core.ReuseInfo{}
 	}
 
 	info := ExtractReuseInfo(string(data))
 	info.SourcePath = path
 	info.SourceType = core.FileHeader
-	return info, nil
+	return info
 }
 
 const binaryCheckLimit = 8192

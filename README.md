@@ -36,6 +36,13 @@ directory names to parsed TOML files, with `"."` for the root. Each lookup reads
 the source file or its sidecar; reopen the project after changing annotations.
 Paths passed to `ReuseInfoOf` must be relative to the project root.
 
+Use `OpenProjectFS(fsys)` to read an `fs.FS`, such as an immutable Git tree or
+an embedded filesystem. Its root is `"."`; use `fs.Sub` to select a subdirectory.
+Keep the filesystem available for lookups after opening the project.
+`CoveredFilesFS(fsys)` lists covered files without opening a project. Both FS
+APIs use slash-separated paths, including metadata source paths. Lookups in an
+FS-backed project require paths that satisfy `fs.ValidPath`.
+
 A sidecar replaces the source file's header, then participates in annotation
 resolution. The outermost matching `override` suppresses closer annotations
 and both header and sidecar. Otherwise, the nearest `closest` values fill
@@ -78,6 +85,8 @@ Returned values own their strings, so retaining a short header does not retain
 the whole input. `extract.ExtractFromFile` reads the complete file and returns
 empty metadata for NUL bytes or invalid UTF-8 in its first 8 KiB, extending that
 probe just enough to finish a crossing code point. UTF-16 is not decoded.
+`extract.ExtractFromFS(fsys, path)` applies the same extraction to a file in an
+`fs.FS`.
 
 The `toml` subpackage reads annotations without opening a project:
 
@@ -100,8 +109,9 @@ Both subpackages also provide string parsers, `toml.ParseReuseTOML` and
 
 File reads and traversal have no size or file-count limits. `AllReuseInfo`
 retains all results; applications processing large trees can use individual
-lookups to consume results as they go. Concurrent lookups are supported while
-the project and its parsed annotations remain unchanged.
+lookups to consume results as they go. Concurrent lookups require a filesystem
+that supports concurrent reads, with the project and its parsed annotations
+unchanged.
 
 ## Development
 
